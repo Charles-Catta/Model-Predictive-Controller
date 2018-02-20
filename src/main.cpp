@@ -11,11 +11,7 @@
 
 // for convenience
 using json = nlohmann::json;
-
-// For converting back and forth between radians and degrees.
-constexpr double pi() { return M_PI; }
-double deg2rad(double x) { return x * pi() / 180; }
-double rad2deg(double x) { return x * 180 / pi(); }
+#define poly_order 3
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -87,19 +83,50 @@ int main() {
           // j[1] is the data JSON object
           vector<double> ptsx = j[1]["ptsx"];
           vector<double> ptsy = j[1]["ptsy"];
-          double px = j[1]["x"];
-          double py = j[1]["y"];
-          double psi = j[1]["psi"];
-          double v = j[1]["speed"];
+          double px    = j[1]["x"];
+          double py    = j[1]["y"];
+          double psi   = j[1]["psi"];
+          double v     = j[1]["speed"];
+          double a     = j[1]["throttle"];
+          double delta = j[1]["steering_angle"];
 
-          /*
-          * TODO: Calculate steering angle and throttle using MPC.
-          *
-          * Both are in between [-1, 1].
-          *
-          */
-          double steer_value;
-          double throttle_value;
+          // ======= MPC COMPUTATION ======
+          Eigen::VectorXd state(6);
+          Eigen::VectorXd car_xs(ptsx.size());
+          Eigen::VectorXd car_ys(ptsy.size());
+
+          for (size_t i = 0; i < ptsx.size(); i++) {
+            double x = ptsx[i] - px,
+                    y = ptsy[i] - py;
+            car_xs[i] = x * cos(-psi) - y * sin(-psi);
+            car_ys[i] = x * sin(-psi) + y * cos(-psi);
+          }
+
+          Eigen::VectorXd coefficients = polyfit(car_xs, car_ys, poly_order);
+          double CTE = polyeval(coefficients, 0);
+          double eps = -atan(coefficients[1]);
+
+          // State prediction 
+          double px_pred = v * dt,
+                 py_pred = 0,
+                 psi_pred = v * -delta / Lf * dt,
+                 v_pred = v + a * dt,
+                 cte_pred = CTE + v * sin(eps) * dt,
+                 eps_pred = eps + v * -delta / Lf * dt;
+
+          state << px_pred,
+                   py_pred,
+                   psi_pred,
+                   v_pred,
+                   cte_pred,
+                   eps_pred;
+
+          std::cout << "Start Solve" << std::endl;
+          vector<double> z = mpc.Solve(state, coefficients); 
+          std::cout << "Done Solve" << std::endl;
+
+          double steer_value = z[0] / (Lf * deg2rad(25.0));
+          double throttle_value = z[1];
 
           json msgJson;
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
@@ -108,11 +135,15 @@ int main() {
           msgJson["throttle"] = throttle_value;
 
           //Display the MPC predicted trajectory 
-          vector<double> mpc_x_vals;
-          vector<double> mpc_y_vals;
+          vector<double> mpc_x_vals = { state[0] };
+          vector<double> mpc_y_vals = { state[1] };
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Green line
+          for (size_t i = 2; i < z.size(); i += 2) {
+            mpc_x_vals.push_back(z[i]);
+            mpc_y_vals.push_back(z[i + 1]);
+          }
 
           msgJson["mpc_x"] = mpc_x_vals;
           msgJson["mpc_y"] = mpc_y_vals;
@@ -120,10 +151,16 @@ int main() {
           //Display the waypoints/reference line
           vector<double> next_x_vals;
           vector<double> next_y_vals;
+          int n_pts = 25;
+          double increment = 2.5;
+          for (int i = 1; i < n_pts; i++) {
+            next_x_vals.push_back(i * increment);
+            next_y_vals.push_back(polyeval(coefficients, i * increment));
+          }
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Yellow line
-
+          
           msgJson["next_x"] = next_x_vals;
           msgJson["next_y"] = next_y_vals;
 
